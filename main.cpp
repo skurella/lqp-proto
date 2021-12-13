@@ -3,7 +3,7 @@
 #include <vector>
 #include <functional>
 #include <memory>
-#include <map>
+#include <queue>
 
 #include "utils.hpp"
 
@@ -68,7 +68,7 @@ public:
     virtual ~AbstractLQPNode() = default;
 
     const LQPNodeType type;
-    [[nodiscard]] virtual LQPNodeVector get_inputs() = 0;
+    [[nodiscard]] virtual LQPNodeVector get_inputs() const = 0;
 };
 
 class ColumnExpression final : public AbstractExpression {
@@ -80,7 +80,7 @@ class AbstractLeafNode : public AbstractLQPNode {
 protected:
     explicit AbstractLeafNode(const LQPNodeType& type) : AbstractLQPNode(type) {}
 public:
-    [[nodiscard]] LQPNodeVector get_inputs() override { return {}; }
+    [[nodiscard]] LQPNodeVector get_inputs() const override { return {}; }
 };
 
 class AbstractSingleInputNode : public AbstractLQPNode {
@@ -90,7 +90,7 @@ protected:
         , input(input.get_node_ref()) {}
     LQPNodeRef input;
 public:
-    [[nodiscard]] LQPNodeVector get_inputs() override { return { std::ref(input.get_node()) }; }
+    [[nodiscard]] LQPNodeVector get_inputs() const override { return { std::ref(input.get_node()) }; }
 };
 
 class StoredTableNode final : public AbstractLeafNode {
@@ -121,7 +121,7 @@ public:
         , left_input(left_input.get_node_ref())
         , right_input(right_input.get_node_ref()) {}
 
-    [[nodiscard]] LQPNodeVector get_inputs() override { return {
+    [[nodiscard]] LQPNodeVector get_inputs() const override { return {
         std::ref(left_input.get_node()),
         std::ref(right_input.get_node())
     }; };
@@ -135,30 +135,51 @@ class LQP {
     // - split itself? / LQP view
     // - topological-sort destructor
 private:
-    using NodeRef = std::reference_wrapper<AbstractLQPNode>;
-    using CNodeRef = std::reference_wrapper<const AbstractLQPNode>;
+    using NodePtr = AbstractLQPNode *;
+    using CNodePtr = const AbstractLQPNode *;
     /// Owns the nodes and provides an indexed access for removal.
-    std::map<CNodeRef, std::unique_ptr<AbstractLQPNode>> nodes;
-    std::multimap<CNodeRef, NodeRef> node_parents;
+    std::unordered_map<CNodePtr, std::unique_ptr<AbstractLQPNode>> nodes;
+    std::unordered_multimap<CNodePtr, NodePtr> node_parents {};
 
-    // LQPNodeRef root;
+//     LQPNodeRef root;
+    NodePtr root = nullptr;
+
 public:
     ~LQP() {
-        // TODO remove root reference
-        // TODO topological sort descending, remove all nodes
+        // TODO topological sort to handle diamond schemas
+
+        // Remove nodes sequentially starting with root and continuing through their inputs.
+        if (root == nullptr) { throw std::runtime_error("node root not set"); }
+        std::queue<CNodePtr> removal_queue({ root });
+
+        while (!removal_queue.empty()) {
+            auto el = removal_queue.front();
+            removal_queue.pop();
+
+            for (auto input : el->get_inputs()) {
+                removal_queue.push(&input.get());
+            }
+
+            remove_node(*el);
+        }
+    }
+
+    void set_root(const AbstractLQPNode& node) {
+        // TODO don't allow the LQP to NOT have a root - create an LQPBuilder
+        root = const_cast<AbstractLQPNode *>(&node);
     }
 
     template <typename T, typename... Args>
     [[nodiscard]] T& make_node(Args&&... args) {
         auto node = std::make_unique<T>(std::forward<Args>(args)...);
-        auto& node_ref = *node.get();
-        nodes[node_ref] = std::move(node);
-        return node_ref;
+        auto node_ptr = node.get();
+        nodes[node_ptr] = std::move(node);
+        return *node_ptr;
     }
 
     void remove_node(const AbstractLQPNode& node) {
         if (node.get_ref_count() != 0) { throw std::logic_error("cannot remove node: non-zero reference count"); }
-        if (nodes.erase(std::ref(node)) == 0) { throw std::logic_error("cannot remove node: not found in LQP"); }
+        if (nodes.erase(&node) == 0) { throw std::logic_error("cannot remove node: not found in LQP"); }
     }
 
     void replace_node(const AbstractLQPNode& old_node, AbstractLQPNode& new_node) {
@@ -176,12 +197,12 @@ int main() {
 
     // TODO: create an LQP builder to add a "root exists" invariant to LQP?
     LQP lqp;
-    auto& root = lqp.make_node<PredicateNode>("some predicate",
+    lqp.set_root(lqp.make_node<PredicateNode>("some predicate",
         lqp.make_node<JoinNode>(
             lqp.make_node<StoredTableNode>("tbl_a"),
             lqp.make_node<StoredTableNode>("tbl_b")
         )
-    );
+    ));
 
     // Step 2: apply predicate pushdown.
     // TODO
