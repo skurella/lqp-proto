@@ -29,9 +29,9 @@ enum class LQPNodeType {
     Join
 };
 
-/// Reference counting is only used for assertions.
 /// Only allows const access to the node.
 /// Modifications must go through the owner of the node.
+/// Reference counting is only used for consistency checks.
 class LQPNodeRef final : public utils::ReferenceCounter<AbstractLQPNode> {
     std::reference_wrapper<const AbstractLQPNode> node;
 public:
@@ -44,7 +44,7 @@ public:
 
 class LQPNodeRefManager {
 private:
-    int ref_count = 0;
+    mutable int ref_count = 0;
     AbstractLQPNode& node;
 protected:
     ~LQPNodeRefManager() {
@@ -56,7 +56,7 @@ protected:
 public:
     explicit LQPNodeRefManager(AbstractLQPNode& node) : node(node) {}
     [[nodiscard]] int get_ref_count() const { return ref_count; }
-    [[nodiscard]] LQPNodeRef get_node_ref() { return LQPNodeRef(node, ref_count); }
+    [[nodiscard]] LQPNodeRef get_node_ref() const { return LQPNodeRef(node, ref_count); }
 };
 
 using LQPNodeVector = std::vector<std::reference_wrapper<const AbstractLQPNode>>;
@@ -64,11 +64,15 @@ using LQPNodeVector = std::vector<std::reference_wrapper<const AbstractLQPNode>>
 class AbstractLQPNode : public LQPNodeRefManager {
 protected:
     explicit AbstractLQPNode(const LQPNodeType type) : LQPNodeRefManager(*this), type(type) {}
+
 public:
     virtual ~AbstractLQPNode() = default;
 
     const LQPNodeType type;
+
     [[nodiscard]] virtual LQPNodeVector get_inputs() const = 0;
+
+    virtual void replace_input(const AbstractLQPNode& old_input, const AbstractLQPNode& new_input) = 0;
 };
 
 class ColumnExpression final : public AbstractExpression {
@@ -81,16 +85,28 @@ protected:
     explicit AbstractLeafNode(const LQPNodeType& type) : AbstractLQPNode(type) {}
 public:
     [[nodiscard]] LQPNodeVector get_inputs() const override { return {}; }
+
+    void replace_input(const AbstractLQPNode &old_input, const AbstractLQPNode &new_input) override {
+        throw std::logic_error("cannot replace input: node is a leaf");
+    }
 };
 
 class AbstractSingleInputNode : public AbstractLQPNode {
 protected:
-    explicit AbstractSingleInputNode(const LQPNodeType& type, AbstractLQPNode& input)
+    explicit AbstractSingleInputNode(const LQPNodeType& type, const AbstractLQPNode& input)
         : AbstractLQPNode(type)
         , input(input.get_node_ref()) {}
+
     LQPNodeRef input;
 public:
-    [[nodiscard]] LQPNodeVector get_inputs() const override { return { std::ref(input.get_node()) }; }
+    [[nodiscard]] std::reference_wrapper<const AbstractLQPNode> get_input() const { return std::ref(input.get_node()); }
+
+    [[nodiscard]] LQPNodeVector get_inputs() const override { return { get_input() }; }
+
+    void replace_input(const AbstractLQPNode &old_input, const AbstractLQPNode &new_input) override {
+        if (&old_input != &input.get_node()) throw std::logic_error("cannot replace input: input not found");
+        input = new_input.get_node_ref();
+    }
 };
 
 class StoredTableNode final : public AbstractLeafNode {
@@ -106,7 +122,7 @@ class PredicateNode final : public AbstractSingleInputNode {
 private:
     std::string predicate;
 public:
-    explicit PredicateNode(std::string predicate, AbstractLQPNode& input)
+    explicit PredicateNode(std::string predicate, const AbstractLQPNode& input)
         : AbstractSingleInputNode(LQPNodeType::Predicate, input)
         , predicate(std::move(predicate)) {}
 };
@@ -116,7 +132,7 @@ private:
     LQPNodeRef left_input;
     LQPNodeRef right_input;
 public:
-    explicit JoinNode(AbstractLQPNode& left_input, AbstractLQPNode& right_input)
+    explicit JoinNode(const AbstractLQPNode& left_input, const AbstractLQPNode& right_input)
         : AbstractLQPNode(LQPNodeType::Join)
         , left_input(left_input.get_node_ref())
         , right_input(right_input.get_node_ref()) {}
@@ -125,6 +141,18 @@ public:
         std::ref(left_input.get_node()),
         std::ref(right_input.get_node())
     }; };
+
+    void replace_input(const AbstractLQPNode &old_input, const AbstractLQPNode &new_input) override {
+        if (&old_input == &left_input.get_node()) {
+            left_input = new_input.get_node_ref();
+            return;
+        }
+        if (&old_input == &right_input.get_node()) {
+            right_input = new_input.get_node_ref();
+            return;
+        }
+        throw std::logic_error("cannot replace input: input not found");
+    }
 };
 
 class LQP {
@@ -144,12 +172,23 @@ private:
 //     LQPNodeRef root;
     NodePtr root = nullptr;
 
+    void remove_parent_link(const AbstractLQPNode& input, const AbstractLQPNode& parent) {
+        auto input_parents_range = node_parents.equal_range(&input);
+        auto parent_link = std::find_if(
+                input_parents_range.first,
+                input_parents_range.second,
+                [&parent](auto& input_parent) { return input_parent.second == &parent; }
+        );
+        if (parent_link == input_parents_range.second) { throw std::logic_error("cannot remove parent link: not found"); }
+        node_parents.erase(parent_link);
+    }
+
 public:
     ~LQP() {
         // TODO topological sort to handle diamond schemas
 
         // Remove nodes sequentially starting with root and continuing through their inputs.
-        if (root == nullptr) { throw std::runtime_error("node root not set"); }
+        if (root == nullptr) { std::cerr << "node root not set" << std::endl; std::terminate(); }
         std::queue<CNodePtr> removal_queue({ root });
 
         while (!removal_queue.empty()) {
@@ -164,26 +203,56 @@ public:
         }
     }
 
+    // TODO don't allow the LQP to NOT have a root - create an LQPBuilder
     void set_root(const AbstractLQPNode& node) {
-        // TODO don't allow the LQP to NOT have a root - create an LQPBuilder
+        // const_cast is allowed, because we have mutable access through `nodes`.
         root = const_cast<AbstractLQPNode *>(&node);
     }
 
     template <typename T, typename... Args>
-    [[nodiscard]] T& make_node(Args&&... args) {
+    [[nodiscard]] const T& make_node(Args&&... args) {
+        static_assert(std::derived_from<T, AbstractLQPNode>);
+
+        // Create node.
         auto node = std::make_unique<T>(std::forward<Args>(args)...);
+
+        // Store the node and the parent relation.
         auto node_ptr = node.get();
+        for (auto input : node->get_inputs()) {
+            node_parents.insert(decltype(node_parents)::value_type(&input.get(), node_ptr));
+        }
         nodes[node_ptr] = std::move(node);
         return *node_ptr;
     }
 
     void remove_node(const AbstractLQPNode& node) {
+        // Assert invariants.
         if (node.get_ref_count() != 0) { throw std::logic_error("cannot remove node: non-zero reference count"); }
+        if (node_parents.contains(&node)) { throw std::logic_error("cannot remove node: parent links exist"); }
+
+        // Remove parent links.
+        for (auto input : node.get_inputs()) {
+            remove_parent_link(input, node);
+        }
+
+        // Remove node.
         if (nodes.erase(&node) == 0) { throw std::logic_error("cannot remove node: not found in LQP"); }
     }
 
-    void replace_node(const AbstractLQPNode& old_node, AbstractLQPNode& new_node) {
-        throw std::logic_error("not implemented");
+    /// Substitutes a node for a new single-input node that has the old node as its input.
+    template <typename T, typename... Args>
+    [[nodiscard]] T& wrap_node_with(const AbstractLQPNode& node, Args&&... args) {
+        static_assert(std::derived_from<T, AbstractSingleInputNode>);
+
+        // Create a new node with the wrapped node as input.
+        auto& new_node = make_node<T>(std::forward<Args>(args)..., node);
+
+        // Replace the old node with the new node for each parent.
+        auto output_nodes = node_parents.equal_range(&node);
+        for (auto it = output_nodes.first; it != output_nodes.second; ++it) {
+            auto& parent = *it->second;
+            parent.replace_input(node, new_node);
+        }
     }
 };
 
