@@ -209,6 +209,11 @@ public:
         root = const_cast<AbstractLQPNode *>(&node);
     }
 
+    const AbstractLQPNode& get_root() {
+        if (root == nullptr) throw std::logic_error("LQP root not set");
+        return *root;
+    }
+
     template <typename T, typename... Args>
     [[nodiscard]] const T& make_node(Args&&... args) {
         static_assert(std::derived_from<T, AbstractLQPNode>);
@@ -254,7 +259,36 @@ public:
             parent.replace_input(node, new_node);
         }
     }
+
+    template<typename State> using Visitor = std::function<bool(const AbstractLQPNode&, State&)>;
+
+    /// State is passed by value to the visit function and by reference to the visitor.
+    /// When visitor modifies the state, the children receive a copy of that modified state.
+    template<typename State>
+    void visit(const AbstractLQPNode& node, const Visitor<State>& visitor, State state) {
+        auto visit_inputs = visitor(node, state);
+        if (!visit_inputs) return;
+        for (auto input : node.get_inputs()) {
+            visit(input, visitor, state);
+        }
+    }
 };
+
+void print_lqp(LQP& lqp) {
+    static auto node_name = [](const AbstractLQPNode& node) {
+        switch(node.type) {
+            case LQPNodeType::Join: return "Join";
+            case LQPNodeType::Predicate: return "Predicate";
+            case LQPNodeType::Projection: return "Projection";
+            case LQPNodeType::StoredTable: return "StoredTable";
+        }
+    };
+    lqp.visit<int>(lqp.get_root(), [](const AbstractLQPNode& node, int& indent) {
+        std::cout << std::string(indent, ' ') << node_name(node) << std::endl;
+        indent += 2;
+        return true;
+    }, 0);
+}
 
 int main() {
     // Step 1: create a simple LQP.
@@ -272,6 +306,7 @@ int main() {
             lqp.make_node<StoredTableNode>("tbl_b")
         )
     ));
+    print_lqp(lqp);
 
     // Step 2: apply predicate pushdown.
     // TODO
