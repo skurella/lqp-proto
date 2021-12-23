@@ -24,6 +24,7 @@ public:
     }
     ReferenceCounter& operator=(ReferenceCounter<T>&& other) {
         if (this != &other) {
+            if (_ref_count) (*_ref_count)--;
             _ref_count = std::exchange(other._ref_count, nullptr);
         }
         return *this;
