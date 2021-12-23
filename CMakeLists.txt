@@ -3,4 +3,4 @@ project(lqp_proto)
 
 set(CMAKE_CXX_STANDARD 20)
 
-add_executable(lqp_proto main.cpp utils.hpp)
+add_executable(lqp_proto main.cpp utils.hpp reverse_index.hpp fwd.hpp)

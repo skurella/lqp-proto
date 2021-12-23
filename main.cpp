@@ -5,11 +5,9 @@
 #include <memory>
 #include <queue>
 
+#include "fwd.hpp"
+#include "reverse_index.hpp"
 #include "utils.hpp"
-
-// Forward declarations
-class AbstractExpression;
-class AbstractLQPNode;
 
 enum class ExpressionType {
     Column,
@@ -167,20 +165,13 @@ private:
     using CNodePtr = const AbstractLQPNode *;
     /// Owns the nodes and provides an indexed access for removal.
     std::unordered_map<CNodePtr, std::unique_ptr<AbstractLQPNode>> nodes;
-    std::unordered_multimap<CNodePtr, NodePtr> node_parents {};
+    ReverseDAGIndex<const AbstractLQPNode> node_parents;
 
 //     LQPNodeRef root;
     NodePtr root = nullptr;
 
-    void remove_parent_link(const AbstractLQPNode& input, const AbstractLQPNode& parent) {
-        auto input_parents_range = node_parents.equal_range(&input);
-        auto parent_link = std::find_if(
-                input_parents_range.first,
-                input_parents_range.second,
-                [&parent](auto& input_parent) { return input_parent.second == &parent; }
-        );
-        if (parent_link == input_parents_range.second) { throw std::logic_error("cannot remove parent link: not found"); }
-        node_parents.erase(parent_link);
+    AbstractLQPNode& get_mutable(const AbstractLQPNode& node) {
+        return const_cast<AbstractLQPNode&>(node);
     }
 
 public:
@@ -223,8 +214,8 @@ public:
 
         // Store the node and the parent relation.
         auto node_ptr = node.get();
-        for (auto input : node->get_inputs()) {
-            node_parents.insert(decltype(node_parents)::value_type(&input.get(), node_ptr));
+        for (auto& input : node->get_inputs()) {
+            node_parents.add(input, *node);
         }
         nodes[node_ptr] = std::move(node);
         return *node_ptr;
@@ -233,11 +224,11 @@ public:
     void remove_node(const AbstractLQPNode& node) {
         // Assert invariants.
         if (node.get_ref_count() != 0) { throw std::logic_error("cannot remove node: non-zero reference count"); }
-        if (node_parents.contains(&node)) { throw std::logic_error("cannot remove node: parent links exist"); }
+        if (node_parents.get_parent_count(node)) { throw std::logic_error("cannot remove node: parent links exist"); }
 
-        // Remove parent links.
-        for (auto input : node.get_inputs()) {
-            remove_parent_link(input, node);
+        // Remove inputs' parent links to this node.
+        for (auto& input : node.get_inputs()) {
+            node_parents.remove(input, node);
         }
 
         // Remove node.
@@ -246,18 +237,24 @@ public:
 
     /// Substitutes a node for a new single-input node that has the old node as its input.
     template <typename T, typename... Args>
-    [[nodiscard]] T& wrap_node_with(const AbstractLQPNode& node, Args&&... args) {
+    const T& wrap_node_with(const AbstractLQPNode& node, Args&&... args) {
         static_assert(std::derived_from<T, AbstractSingleInputNode>);
 
         // Create a new node with the wrapped node as input.
         auto& new_node = make_node<T>(std::forward<Args>(args)..., node);
 
         // Replace the old node with the new node for each parent.
-        auto output_nodes = node_parents.equal_range(&node);
-        for (auto it = output_nodes.first; it != output_nodes.second; ++it) {
-            auto& parent = *it->second;
-            parent.replace_input(node, new_node);
+        for (const auto& [_, parent_ptr] : node_parents.get_parents(node)) {
+            if (parent_ptr == &new_node) continue;
+            get_mutable(*parent_ptr).replace_input(node, new_node);
         }
+
+        // Update parent node index.
+        node_parents.remove(node, new_node);
+        node_parents.replace_input(node, new_node);
+        node_parents.add(node, new_node);
+
+        return new_node;
     }
 
     template<typename State> using Visitor = std::function<bool(const AbstractLQPNode&, State&)>;
@@ -268,7 +265,7 @@ public:
     void visit(const AbstractLQPNode& node, const Visitor<State>& visitor, State state) {
         auto visit_inputs = visitor(node, state);
         if (!visit_inputs) return;
-        for (auto input : node.get_inputs()) {
+        for (auto& input : node.get_inputs()) {
             visit(input, visitor, state);
         }
     }
@@ -300,15 +297,17 @@ int main() {
 
     // TODO: create an LQP builder to add a "root exists" invariant to LQP?
     LQP lqp;
+    auto& tbl_a_node = lqp.make_node<StoredTableNode>("tbl_a");
     lqp.set_root(lqp.make_node<PredicateNode>("some predicate",
         lqp.make_node<JoinNode>(
-            lqp.make_node<StoredTableNode>("tbl_a"),
+            tbl_a_node,
             lqp.make_node<StoredTableNode>("tbl_b")
         )
     ));
     print_lqp(lqp);
 
     // Step 2: apply predicate pushdown.
+    lqp.wrap_node_with<PredicateNode>(tbl_a_node, "some predicate lower down");
     // TODO
 
     // Step 3: verify LQP.
@@ -318,6 +317,7 @@ int main() {
     //  |  \_[2] [StoredTable]
     //  \_[3] [Predicate]
     //     \_[4] [StoredTable]
+    print_lqp(lqp);
     // TODO
 
     return 0;
