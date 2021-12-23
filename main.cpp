@@ -32,11 +32,11 @@ enum class LQPNodeType {
 /// Only allows const access to the node.
 /// Modifications must go through the owner of the node.
 /// Reference counting is only used for consistency checks.
-class LQPNodeRef final : public utils::ReferenceCounter<AbstractLQPNode> {
+class LQPNodeRef final : public utils::ReferenceCounter {
     std::reference_wrapper<const AbstractLQPNode> node;
 public:
     explicit LQPNodeRef(const AbstractLQPNode& node, int& ref_count)
-            : utils::ReferenceCounter<AbstractLQPNode>(ref_count)
+            : utils::ReferenceCounter(ref_count)
             , node(node) {}
 
     [[nodiscard]] const AbstractLQPNode& get_node() const { return node; }

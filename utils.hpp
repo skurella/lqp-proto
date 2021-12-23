@@ -4,7 +4,6 @@
 
 namespace utils {
 
-template <typename T>
 class ReferenceCounter {
     int* _ref_count = nullptr;
 public:
@@ -14,7 +13,7 @@ public:
     ~ReferenceCounter() {
         if (_ref_count) (*_ref_count)--;
     }
-    ReferenceCounter& operator=(const ReferenceCounter<T>& other) {
+    ReferenceCounter& operator=(const ReferenceCounter& other) {
         if (this != &other) {
             if (_ref_count) (*_ref_count)--;
             _ref_count = other._ref_count;
@@ -22,7 +21,7 @@ public:
         }
         return *this;
     }
-    ReferenceCounter& operator=(ReferenceCounter<T>&& other) {
+    ReferenceCounter& operator=(ReferenceCounter&& other) {
         if (this != &other) {
             if (_ref_count) (*_ref_count)--;
             _ref_count = std::exchange(other._ref_count, nullptr);
