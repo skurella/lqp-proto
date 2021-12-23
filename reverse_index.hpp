@@ -51,12 +51,16 @@ public:
                 input_parents_range.second,
                 [&parent](auto& input_parent) { return input_parent.second == &parent; }
         );
-        if (parent_link == input_parents_range.second) { throw std::logic_error("cannot remove parent link: not found"); }
+        if (parent_link == input_parents_range.second) {
+            throw std::logic_error("cannot remove parent link: not found");
+        }
         node_parents.erase(parent_link);
     }
 
     void replace_input(T& node, T& new_node) {
-        if (get_parent_count(new_node) != 0) throw std::logic_error("cannot replace input: new node already has parents");
+        if (get_parent_count(new_node) != 0) {
+            throw std::logic_error("cannot replace input: new node already has parents");
+        }
 
         for (const auto [_, parent] : get_parents(node)) {
             add(new_node, *parent);
