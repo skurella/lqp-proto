@@ -7,10 +7,10 @@
 template <typename T>
 class ReverseDAGIndex final {
 private:
-    std::unordered_multimap<T*, T*> node_parents;
+    std::unordered_multimap<const T*, const T*> node_parents;
 
 public:
-    [[nodiscard]] int get_parent_count(T& node) const {
+    [[nodiscard]] int get_parent_count(const T& node) const {
         return node_parents.count(&node);
     }
 
@@ -28,11 +28,11 @@ public:
     };
     static_assert(std::ranges::range<NodeParentIterator>);
 
-    NodeParentIterator get_parents(T& node) const {
+    NodeParentIterator get_parents(const T& node) const {
         return NodeParentIterator(node_parents.equal_range(&node));
     }
 
-    void add(T& input, T& parent) {
+    void add(const T& input, const T& parent) {
         // Verify the link does not already exist.
         const auto& parents = get_parents(input);
         if (std::ranges::count_if(parents.begin(), parents.end(), [&parent](const auto& link) {
@@ -44,7 +44,7 @@ public:
         node_parents.insert(typename decltype(node_parents)::value_type(&input, &parent));
     }
 
-    void remove(T& input, T& parent) {
+    void remove(const T& input, const T& parent) {
         auto input_parents_range = node_parents.equal_range(&input);
         auto parent_link = std::find_if(
                 input_parents_range.first,
@@ -57,7 +57,7 @@ public:
         node_parents.erase(parent_link);
     }
 
-    void replace_input(T& node, T& new_node) {
+    void replace_input(const T& node, const T& new_node) {
         if (get_parent_count(new_node) != 0) {
             throw std::logic_error("cannot replace input: new node already has parents");
         }

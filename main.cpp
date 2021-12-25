@@ -165,7 +165,7 @@ private:
     using CNodePtr = const AbstractLQPNode *;
     /// Owns the nodes and provides an indexed access for removal.
     std::unordered_map<CNodePtr, std::unique_ptr<AbstractLQPNode>> nodes;
-    ReverseDAGIndex<const AbstractLQPNode> node_parents;
+    ReverseDAGIndex<AbstractLQPNode> node_parents;
 
 //     LQPNodeRef root;
     NodePtr root = nullptr;
