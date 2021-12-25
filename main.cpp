@@ -257,6 +257,19 @@ public:
         return new_node;
     }
 
+    void bypass_node(const AbstractSingleInputNode& node) {
+        for (const auto& [_, parent] : node_parents.get_parents(node)) {
+            get_mutable(*parent).replace_input(node, node.get_input());
+        }
+
+        // TODO extract common logic with remove_node
+        if (node.get_ref_count() != 0) { throw std::logic_error("cannot remove node: non-zero reference count"); }
+        if (nodes.erase(&node) == 0) { throw std::logic_error("cannot remove node: not found in LQP"); }
+
+        node_parents.remove(node.get_input(), node);
+        node_parents.replace_input(node, node.get_input());
+    }
+
     template<typename State> using Visitor = std::function<bool(const AbstractLQPNode&, State&)>;
 
     /// State is passed by value to the visit function and by reference to the visitor.
@@ -308,6 +321,7 @@ int main() {
 
     // Step 2: apply predicate pushdown.
     lqp.wrap_node_with<PredicateNode>(tbl_a_node, "some predicate lower down");
+    print_lqp(lqp);
     // TODO
 
     // Step 3: verify LQP.
