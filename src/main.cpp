@@ -310,7 +310,7 @@ int main() {
 
     // TODO: create an LQP builder to add a "root exists" invariant to LQP?
     LQP lqp;
-    auto& tbl_a_node = lqp.make_node<StoredTableNode>("tbl_a");
+    const auto& tbl_a_node = lqp.make_node<StoredTableNode>("tbl_a");
     lqp.set_root(lqp.make_node<PredicateNode>("some predicate",
         lqp.make_node<JoinNode>(
             tbl_a_node,
@@ -320,8 +320,9 @@ int main() {
     print_lqp(lqp);
 
     // Step 2: apply predicate pushdown.
-    lqp.wrap_node_with<PredicateNode>(tbl_a_node, "some predicate lower down");
+    const auto& new_pred = lqp.wrap_node_with<PredicateNode>(tbl_a_node, "some predicate lower down");
     print_lqp(lqp);
+    lqp.bypass_node(new_pred);
     // TODO
 
     // Step 3: verify LQP.
